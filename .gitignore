@@ -216,8 +216,11 @@ __marimo__/
 **/**/example-code/
 
 # Data
-data/
 logs/
 wandb/
 checkpoints/
 models/
+model_plm
+data/meta_*
+data/review_*
+data/Video_Games.train.csv.gz
