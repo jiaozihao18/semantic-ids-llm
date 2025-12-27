@@ -1,6 +1,8 @@
 #!/bin/bash
 # Run script for Qwen3-8B vocabulary extension training with DeepSpeed
 
+set -e  # Exit on error
+
 export WANDB_MODE=disabled  # Set to "online" if you want to use W&B
 export CUDA_LAUNCH_BLOCKING=1
 
@@ -11,7 +13,7 @@ DATA_DIR=./data
 OUTPUT_DIR=./models/qwen3_8b_vocab_extended
 
 # DeepSpeed config (adjust path as needed)
-DEEPSPEED_CONFIG=./config/ds_z3_bf16.json  # Or create your own config
+DEEPSPEED_CONFIG=src/dp_zero2.json  # Using ZeRO stage 2 config
 
 # Training parameters (can be overridden via command line)
 BATCH_SIZE=32

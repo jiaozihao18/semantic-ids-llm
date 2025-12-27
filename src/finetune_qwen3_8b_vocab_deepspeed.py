@@ -898,10 +898,26 @@ if __name__ == "__main__":
     config.log_config()
 
     logger.info("Loading base model")
+    
+    # When using DeepSpeed, don't use device_map as DeepSpeed handles device placement
+    # Setup device_map for distributed training
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    ddp = world_size != 1
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    
+    # Device map setup for distributed training
+    # When using DeepSpeed, device_map should match the distributed setup
+    if ddp:
+        device_map = {"": local_rank}
+        logger.info(f"Using device_map with local_rank={local_rank}")
+    else:
+        device_map = "auto"
+        logger.info("Using device_map='auto'")
+    
     model = AutoModelForCausalLM.from_pretrained(
         config.model_name,
         torch_dtype=config.dtype,
-        device_map="auto",
+        device_map=device_map,
         trust_remote_code=True,
     )
     tokenizer = AutoTokenizer.from_pretrained(
