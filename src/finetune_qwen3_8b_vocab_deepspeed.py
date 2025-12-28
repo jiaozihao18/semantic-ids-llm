@@ -64,7 +64,6 @@ class FineTuneConfig:
     output_dir: Path = Path("models/qwen3_8b_vocab_extended")
     logging_steps: int = 100
     eval_steps: int = 250
-    save_steps: int = 5000
 
     # DeepSpeed settings
     deepspeed: Optional[str] = None
@@ -121,19 +120,15 @@ def extend_tokenizer(model, tokenizer, config: FineTuneConfig):
                 new_embedding_size, 1
             )
 
-    # Verify consistency
+    # Verify consistency (resize_token_embeddings should have already handled this)
     new_vocab_size = len(tokenizer)
     new_embedding_size = model.get_input_embeddings().weight.shape[0]
     new_lm_head_size = model.get_output_embeddings().weight.shape[0]
-
-    if new_vocab_size != new_embedding_size or new_vocab_size != new_lm_head_size:
-        model.resize_token_embeddings(new_vocab_size)
-
     assert new_vocab_size == new_embedding_size == new_lm_head_size, "Model dimension mismatch!"
     return num_added
 
 
-def prepare_model(model, tokenizer, config: FineTuneConfig, num_new_tokens: int):
+def prepare_model(model, tokenizer, config: FineTuneConfig):
     """Prepare model for embedding-only training by freezing all parameters except new embeddings."""
     current_vocab_size = len(tokenizer)
     current_embedding_size = model.get_input_embeddings().weight.shape[0]
@@ -197,7 +192,7 @@ def tokenize_dataset(examples, tokenizer, max_length):
     )
 
 
-def train_embeddings(model, tokenizer, config: FineTuneConfig, num_new_tokens: int):
+def train_embeddings(model, tokenizer, config: FineTuneConfig):
     """
     Train only the new token embeddings using Trainer with deepspeed support.
     
@@ -205,7 +200,6 @@ def train_embeddings(model, tokenizer, config: FineTuneConfig, num_new_tokens: i
         model: Model with extended vocabulary (only embeddings are trainable)
         tokenizer: Extended tokenizer
         config: Training configuration
-        num_new_tokens: Number of newly added tokens
     """
     train_dataset = load_sid_dataset(config, tokenizer, split="train")
     val_dataset = load_sid_dataset(config, tokenizer, split="val")
@@ -229,11 +223,8 @@ def train_embeddings(model, tokenizer, config: FineTuneConfig, num_new_tokens: i
     # Create data collator
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    # Setup distributed training parameters
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    ddp = world_size != 1
-
     # Create training arguments
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
     training_args = TrainingArguments(
         output_dir=str(config.output_dir),
         per_device_train_batch_size=config.batch_size,
@@ -248,20 +239,15 @@ def train_embeddings(model, tokenizer, config: FineTuneConfig, num_new_tokens: i
         logging_steps=config.logging_steps,
         eval_strategy="steps" if val_dataset else "no",
         eval_steps=config.eval_steps if val_dataset else None,
-        save_steps=config.save_steps,
-        save_strategy="steps",
-        save_total_limit=2,
-        load_best_model_at_end=True if val_dataset else False,
-        metric_for_best_model="eval_loss" if val_dataset else None,
-        greater_is_better=False,
-        fp16=False,  # Disable fp16
-        bf16=True,  # Force bf16
+        save_strategy="no",  # Disable intermediate checkpoint saving, only save at the end
+        load_best_model_at_end=False,  # No intermediate checkpoints to load from
+        bf16=True,  # Use bfloat16 precision
         gradient_checkpointing=config.gradient_checkpointing,
         optim=config.optim,
         seed=config.random_state,
         report_to="tensorboard",  # Use TensorBoard for logging
         deepspeed=config.deepspeed,
-        ddp_find_unused_parameters=False if ddp else None,
+        ddp_find_unused_parameters=False if world_size > 1 else None,
         eval_delay=1 if val_dataset else 0,
     )
 
@@ -282,20 +268,6 @@ def train_embeddings(model, tokenizer, config: FineTuneConfig, num_new_tokens: i
 
 def save_model_and_tokenizer(model, tokenizer, config: FineTuneConfig):
     """Save the model with initialized embeddings and extended tokenizer."""
-    # Verify dimensions before saving
-    input_size = model.get_input_embeddings().weight.shape[0]
-    output_size = model.get_output_embeddings().weight.shape[0]
-    vocab_size = len(tokenizer)
-
-    if input_size != vocab_size or output_size != vocab_size:
-        model.resize_token_embeddings(vocab_size)
-        input_size = model.get_input_embeddings().weight.shape[0]
-        output_size = model.get_output_embeddings().weight.shape[0]
-
-    # Final verification
-    assert input_size == vocab_size, f"Input embeddings size mismatch: {input_size} != {vocab_size}"
-    assert output_size == vocab_size, f"Output embeddings size mismatch: {output_size} != {vocab_size}"
-
     # Save to final directory
     final_save_path = config.output_dir / "final"
     final_save_path.mkdir(parents=True, exist_ok=True)
@@ -350,9 +322,6 @@ if __name__ == "__main__":
     if args.max_steps:
         config.max_steps = args.max_steps
 
-    # Ensure bfloat16
-    config.dtype = torch.bfloat16
-
     # Setup device_map for model loading
     # Note: When using DeepSpeed, set device_map=None as DeepSpeed manages device placement automatically
     if config.deepspeed:
@@ -384,13 +353,12 @@ if __name__ == "__main__":
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # Extend vocabulary
-    num_new_tokens = 0
     if config.extend_vocabulary:
-        num_new_tokens = extend_tokenizer(model, tokenizer, config)
-        model = prepare_model(model, tokenizer, config, num_new_tokens)
+        extend_tokenizer(model, tokenizer, config)
+        model = prepare_model(model, tokenizer, config)
 
     # Train embeddings
-    train_embeddings(model, tokenizer, config, num_new_tokens)
+    train_embeddings(model, tokenizer, config)
 
     # Save model and tokenizer
     save_model_and_tokenizer(model, tokenizer, config)
