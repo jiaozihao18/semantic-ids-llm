@@ -323,24 +323,21 @@ if __name__ == "__main__":
         config.max_steps = args.max_steps
 
     # Setup device_map for model loading
-    # Note: When using DeepSpeed, set device_map=None as DeepSpeed manages device placement automatically
-    if config.deepspeed:
-        device_map = None
-    else:
-        # For standard training, use device_map for efficient multi-GPU/CPU loading
-        world_size = int(os.environ.get("WORLD_SIZE", 1))
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        device_map = {"": local_rank} if world_size > 1 else "auto"
+    device_map = "auto"
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    ddp = world_size != 1
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
+    if ddp:
+        device_map = {"": local_rank}
 
     # Load model and tokenizer
-    model_kwargs = {
-        "torch_dtype": config.dtype,
-        "trust_remote_code": True,
-    }
-    if device_map is not None:
-        model_kwargs["device_map"] = device_map
-
-    model = AutoModelForCausalLM.from_pretrained(config.model_name, **model_kwargs)
+    model = AutoModelForCausalLM.from_pretrained(
+        config.model_name,
+        torch_dtype=config.dtype,
+        device_map=device_map,
+        trust_remote_code=True,
+    )
     tokenizer = AutoTokenizer.from_pretrained(
         config.model_name,
         trust_remote_code=True,
